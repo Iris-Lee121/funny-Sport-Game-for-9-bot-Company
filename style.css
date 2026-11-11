@@ -7,3 +7,8 @@
 
 .grid-main > div,.grid-main > aside,.panel{min-width:0}
 @media(max-width:700px){nav button{font-size:10px;padding:11px 6px;gap:4px}nav button svg{width:14px;height:14px}.page-head{flex-wrap:wrap}.page-head .row-actions{flex-direction:row}.hero-copy{padding-right:20px}.hero-art{position:absolute;right:0;top:0;bottom:0;width:65px;opacity:.5}.hero-foot{flex-wrap:wrap;gap:8px 12px}.hero h1{font-size:24px}}
+
+#registration-print{display:none}
+@media print{@page registration{size:A4 landscape;margin:0}body.registration-printing{margin:0!important;padding:0!important}body.registration-printing>#app,body.registration-printing>#toast,body.registration-printing>dialog{display:none!important}body.registration-printing>#registration-print{display:block}#registration-print img{page:registration;display:block;width:297mm;height:210mm;max-width:none;break-after:page;break-inside:avoid}#registration-print img:last-child{break-after:auto}}
+
+.pdf-export-options{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:20px 0}.pdf-export-options label{display:grid;gap:8px;font-weight:600}.pdf-export-options select{width:100%;padding:10px;border:1px solid #cbd4ce;border-radius:8px;background:white;color:#24372e}@media(max-width:500px){.pdf-export-options{grid-template-columns:1fr}}
