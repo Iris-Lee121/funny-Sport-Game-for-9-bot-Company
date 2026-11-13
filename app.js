@@ -7,20 +7,52 @@ const button=(a,t,cls='',attrs='')=>`<button data-action="${a}" class="${cls}" $
 const fmt=t=>Number.isFinite(t)?t.toLocaleString('en-US',{useGrouping:false,minimumFractionDigits:2,maximumFractionDigits:8}):'—';
 const KEY='sports-meet-shared-cache-v1';let storageOK=true;
 const API='https://sports-meet-shared-iris1121.iris1121.chatgpt.site/api/state';
+// Use AbortController instead of AbortSignal.timeout (unavailable in older Safari/WebViews).
+async function sharedRequest(options={}){
+ const controller=typeof AbortController==='function'?new AbortController():null;
+ let timer;
+ try{
+  const request=fetch(API,{...options,mode:'cors',credentials:'omit',cache:'no-store',...(controller?{signal:controller.signal}:{})});
+  const response=await Promise.race([request,new Promise((_,reject)=>{timer=setTimeout(()=>{reject(Error('共享连接超时，请检查网络后重试'));controller?.abort()},30000)})]);
+  if(response.redirected||!response.headers.get('content-type')?.includes('application/json'))throw Error('共享接口未返回成绩数据，请用系统浏览器打开');
+  return response;
+ }catch(error){if(error.name==='TypeError')throw Error('无法访问共享服务，请检查网络或换用系统浏览器');throw error}
+ finally{clearTimeout(timer)}
+}
+let syncError='',pullBusy=false;
 const initial=await fetch('roster.json').then(r=>{if(!r.ok)throw Error('报名数据未能加载');return r.json()});
 let state={version:1,people:initial,events:compile(initial)},page='overview',event=EVENTS[0],query='',heat='all',demo=false,realState=null;
 let revision=null,syncOnline=false,syncDirty=false,syncBusy=false,syncConflict=false,syncGeneration=0,syncTimer=null;
 let saved='正在连接共享成绩…';
 function cacheLocal(){try{localStorage.setItem(KEY,JSON.stringify(state));storageOK=true}catch{storageOK=false}}
-async function getShared(){const r=await fetch(API,{cache:'no-store',signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error('共享服务暂时不可用');const d=await r.json();validateState(d.state);return d}
-try{const d=await getShared();state=d.state;revision=d.revision;syncOnline=true;saved='已连接 · 公开共享成绩';cacheLocal()}catch{try{const cached=localStorage.getItem(KEY);if(cached)state=validateState(JSON.parse(cached))}catch{}saved='共享服务未连接，暂不可编辑'}
-function syncNotice(){return demo?'':`<div id="sync-banner" class="shared-notice ${syncConflict||!syncOnline?'shared-warning':''}"><span>${icon('users',14)} ${syncConflict?'保存冲突：其他人刚更新了成绩。本机改动已保留，请先导出备份，再重新载入。':!syncOnline?'共享服务暂未连接，当前只读。请重新连接后再编辑。':'公开共享工作区 · 所有人可查看和编辑，其他设备约每5秒更新。'}</span><div>${syncConflict?button('backup','导出本机备份','small'):''}${button('reload-shared',syncConflict?'重新载入共享成绩':'刷新共享成绩','small')}</div></div>`}
+async function getShared(){const r=await sharedRequest();if(!r.ok)throw Error('共享服务暂时不可用（HTTP '+r.status+'）');const d=await r.json();validateState(d.state);return d}
+try{const d=await getShared();state=d.state;revision=d.revision;syncOnline=true;saved='已连接 · 公开共享成绩';cacheLocal()}catch(error){syncError=error.message;try{const cached=localStorage.getItem(KEY);if(cached)state=validateState(JSON.parse(cached))}catch{}saved='共享服务未连接，暂不可编辑'}
+function syncNotice(){return demo?'':`<div id="sync-banner" class="shared-notice ${syncConflict||!syncOnline?'shared-warning':''}"><span>${icon('users',14)} ${syncConflict?'保存冲突：其他人刚更新了成绩。本机改动已保留，请先导出备份，再重新载入。':!syncOnline?'共享服务暂未连接，当前只读。'+esc(syncError||'正在自动重连，请稍候。'):'公开共享工作区 · 所有人可查看和编辑，其他设备约每5秒更新。'}</span><div>${syncConflict?button('backup','导出本机备份','small'):''}${button('reload-shared',syncConflict?'重新载入共享成绩':'刷新共享成绩','small')}</div></div>`}
 function applySharedLocks(){document.querySelectorAll('[data-score]').forEach(t=>{t.disabled=!demo&&(!syncOnline||syncConflict)||(ev().confirmed&&!t.dataset.score.startsWith('final'))})}
 function updateSyncUI(){applySharedLocks();const label=document.querySelector('.saved');if(label&&!demo)label.textContent=saved;const banner=document.querySelector('#sync-banner');if(banner){const holder=document.createElement('div');holder.innerHTML=syncNotice();banner.replaceWith(holder.firstElementChild)}}
 function save(){if(demo){saved='演示数据 · 未写入共享成绩';return}cacheLocal();syncDirty=true;syncGeneration++;saved='共享成绩保存中…';updateSyncUI();clearTimeout(syncTimer);if(syncOnline&&!syncConflict)syncTimer=setTimeout(pushShared,600)}
-async function pushShared(){if(syncBusy||demo||!syncDirty||syncConflict||!syncOnline)return;syncBusy=true;const generation=syncGeneration;const payload=JSON.stringify(state);try{const r=await fetch(API,{method:'PUT',headers:{'Content-Type':'application/json','If-Match':revision},body:payload,signal:AbortSignal.timeout(15000)});const d=await r.json();if(r.status===409){syncConflict=true;saved='保存冲突 · 请先备份再刷新';toast(d.error);return}if(!r.ok)throw Error(d.error||'保存失败');revision=d.revision;if(generation===syncGeneration)syncDirty=false;saved=syncDirty?'共享成绩保存中…':'已共享保存 · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});}catch(e){syncOnline=false;saved='共享保存未完成 · 本机改动已保留';toast('网络保存未完成，请导出备份后重新连接')}finally{syncBusy=false;updateSyncUI();if(syncDirty&&syncOnline&&!syncConflict&&!demo)syncTimer=setTimeout(pushShared,200)}}
-async function pullShared(){if(demo||syncBusy||syncDirty||syncConflict||document.activeElement?.matches('input,select')||document.querySelector('dialog[open]'))return;try{const d=await getShared();if(demo||syncBusy||syncDirty||syncConflict||document.activeElement?.matches('input,select')||document.querySelector('dialog[open]'))return;const changed=d.revision!==revision;state=d.state;revision=d.revision;syncOnline=true;saved='已连接 · 公开共享成绩';cacheLocal();if(changed)render();else updateSyncUI()}catch{syncOnline=false;saved='共享连接暂时中断';updateSyncUI()}}
-async function reloadShared(){const load=async()=>{const generation=syncGeneration;clearTimeout(syncTimer);const d=await getShared();if(generation!==syncGeneration)throw Error('您刚刚又录入了成绩，请先备份再重新载入');state=d.state;revision=d.revision;syncOnline=true;syncDirty=false;syncConflict=false;saved='已更新为最新共享成绩';cacheLocal();render();toast('共享成绩已更新')};if(syncBusy){toast('正在保存，请稍后刷新');return}if(syncDirty)modal('重新载入共享成绩','<p>此操作会舍弃尚未上传的本机改动，载入大家最新的共享成绩。请先使用“导出本机备份”保留当前输入。</p>',load,'舍弃本机改动并刷新');else try{await load()}catch{toast('连接失败，请稍后再试')}}
+async function pushShared(){if(syncBusy||demo||!syncDirty||syncConflict||!syncOnline)return;syncBusy=true;const generation=syncGeneration;const payload=JSON.stringify(state);try{const r=await sharedRequest({method:'PUT',headers:{'Content-Type':'application/json','If-Match':revision},body:payload});const d=await r.json();if(r.status===409){syncConflict=true;saved='保存冲突 · 请先备份再刷新';toast(d.error);return}if(!r.ok)throw Error(d.error||'保存失败');revision=d.revision;if(generation===syncGeneration)syncDirty=false;saved=syncDirty?'共享成绩保存中…':'已共享保存 · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});}catch(e){syncError=e.message;syncOnline=false;saved='共享保存未完成 · 本机改动已保留';toast('网络保存未完成，请导出备份后重新连接')}finally{syncBusy=false;updateSyncUI();if(syncDirty&&syncOnline&&!syncConflict&&!demo)syncTimer=setTimeout(pushShared,200)}}
+async function pullShared(){
+ if(demo||syncBusy||pullBusy||syncConflict)return;
+ pullBusy=true;
+ try{
+  const d=await getShared();
+  if(demo||syncBusy||syncConflict)return;
+  syncOnline=true;syncError='';
+  if(syncDirty){
+   // Retry only if nobody has changed the server version; never overwrite another editor.
+   if(d.revision!==revision){syncConflict=true;saved='保存冲突 · 本机改动已保留';updateSyncUI();return}
+   updateSyncUI();await pushShared();return;
+  }
+  const changed=d.revision!==revision;
+  // Fetch even when a field is focused, but defer rendering to protect the current input.
+  if(changed&&(document.activeElement?.matches('input,select')||document.querySelector('dialog[open]'))){updateSyncUI();return}
+  state=d.state;revision=d.revision;saved='已连接 · 公开共享成绩';cacheLocal();
+  if(changed)render();else updateSyncUI();
+ }catch(error){syncError=error.message;syncOnline=false;saved='共享连接暂时中断 · 自动重连中';updateSyncUI()}
+ finally{pullBusy=false}
+}
+async function reloadShared(){const load=async()=>{const generation=syncGeneration;clearTimeout(syncTimer);const d=await getShared();if(generation!==syncGeneration)throw Error('您刚刚又录入了成绩，请先备份再重新载入');state=d.state;revision=d.revision;syncOnline=true;syncDirty=false;syncConflict=false;saved='已更新为最新共享成绩';cacheLocal();render();toast('共享成绩已更新')};if(syncBusy){toast('正在保存，请稍后刷新');return}if(syncDirty)modal('重新载入共享成绩','<p>此操作会舍弃尚未上传的本机改动，载入大家最新的共享成绩。请先使用“导出本机备份”保留当前输入。</p>',load,'舍弃本机改动并刷新');else try{await load()}catch(error){syncError=error.message;syncOnline=false;updateSyncUI();toast(syncError)}}
 
 function toast(t){$('#toast').textContent=t;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),3600)}
 const person=id=>state.people.find(p=>p.id===id)||{id,name:'未找到选手',department:''};
@@ -98,3 +130,7 @@ cacheLocal();
 render();
 setInterval(pullShared,5000);
 window.addEventListener('beforeunload',e=>{if(syncDirty&&!demo){e.preventDefault();e.returnValue=''}});
+
+window.addEventListener('online',pullShared);
+window.addEventListener('focus',pullShared);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pullShared()});
